@@ -1,142 +1,5 @@
 const std = @import("std");
 
-const Selector = union(enum) {
-    Match: Matcher,
-    All: ExploreAll,
-    Fields: ExploreFields,
-    Index: ExploreIndex,
-    Range: ExploreRange,
-    Recursive: ExploreRecursive,
-    Union: ExploreUnion,
-    Conditional: ExploreConditional,
-    Recurse: void,
-
-    pub fn match() Selector {
-        return Selector{
-            .Match = Matcher{ .onlyIf = null, .label = null },
-        };
-    }
-
-    pub fn matchLabelled(label: []u8) Selector {
-        return Selector{
-            .Match = Matcher{ .onlyIf = null, .label = label },
-        };
-    }
-
-    pub fn all(next: *const Selector) Selector {
-        return Selector{
-            .All = ExploreAll{ .next = next },
-        };
-    }
-
-    pub fn recurse() Selector {
-        return Selector{ .Recurse = undefined };
-    }
-
-    pub fn fielded(fields: []const FieldEntry) Selector {
-        return Selector{
-            .Fields = ExploreFields{ .fields = fields },
-        };
-    }
-
-    pub fn indexed(index: u32, next: *const Selector) Selector {
-        return Selector{
-            .Index = ExploreIndex{ .index = index, .next = next },
-        };
-    }
-
-    pub fn range(start: u32, end: u32, next: *const Selector) Selector {
-        return Selector{
-            .Range = ExploreRange{ .start = start, .end = end, .next = next },
-        };
-    }
-
-    pub fn recursive(sequence: *const Selector) Selector {
-        return Selector{
-            .Recursive = ExploreRecursive{
-                .limit = RecursionLimit.None,
-                .sequence = sequence,
-                .stopAt = null,
-            },
-        };
-    }
-    pub fn recursiveLimited(limit: u32, sequence: *const Selector) Selector {
-        return Selector{
-            .Recursive = ExploreRecursive{
-                .limit = RecursionLimit{ .Depth = limit },
-                .sequence = sequence,
-                .stopAt = undefined,
-            },
-        };
-    }
-
-    pub fn unioned(list: []*const Selector) Selector {
-        return Selector{
-            .Union = ExploreUnion{ .list = list },
-        };
-    }
-
-    pub fn conditional(condition: Condition, next: *const Selector) Selector {
-        return Selector{
-            .Conditional = ExploreConditional{ .condition = condition, .next = next },
-        };
-    }
-};
-
-const Matcher = struct {
-    onlyIf: ?Condition = null,
-    label: ?[]u8 = null,
-};
-
-const ExploreAll = struct {
-    next: *const Selector,
-};
-
-const FieldEntry = struct {
-    field: []const u8,
-    next: *const Selector,
-
-    pub fn init(field: []const u8, next: *const Selector) FieldEntry {
-        return FieldEntry{ .field = field, .next = next };
-    }
-};
-
-const ExploreFields = struct {
-    fields: []const FieldEntry,
-};
-
-const ExploreIndex = struct {
-    index: u32,
-    next: *const Selector,
-};
-
-const ExploreRange = struct {
-    start: u32,
-    end: u32,
-    next: *const Selector,
-};
-
-const ExploreRecursive = struct {
-    limit: RecursionLimit,
-    sequence: *const Selector,
-    stopAt: ?Condition = null,
-};
-
-const ExploreUnion = struct {
-    list: []*const Selector,
-};
-
-const ExploreConditional = struct {
-    condition: Condition,
-    next: *const Selector,
-};
-
-const Condition = struct {}; // TODO: specify this.
-const RecursionLimit = union(enum) {
-    None: void,
-    Depth: u32,
-};
-
 // The tokenizer emits events with slices
 const Token = union(enum) {
     whitespace: []u8, // whitespace to be ignored
@@ -178,6 +41,7 @@ fn tokenMode(byte: u8) LexMode {
             else LexMode.Ident,
     };
 }
+
 fn isWhitespace(byte: u8) bool {
     return byte == ' ' or byte == '\t' or byte == '\r' or byte == '\n';
 }
@@ -198,98 +62,108 @@ fn isBin(byte: u8) bool {
     return byte == '0' or byte == '1';
 }
 
-// Given an input slice of bytes, emit token events via the callback function.
-fn tokenize(input: []const u8, onToken: fn (token: Token) void) void {
-    var mode: LexMode = LexMode.Whitespace;
-    var start: usize = 0;
+const Parser = struct {
+    fn parseFile(self: *Parser, filename: []const u8) !void {
+        // Read the sample file and run it through tokenizer.
+        const dir = std.fs.cwd();
+        const buffer = try dir.readFileAlloc(std.testing.allocator, filename, 1024 * 1024);
+        defer std.testing.allocator.free(buffer);
+        return self.tokenize(buffer);
+    }
 
-    for (input) |byte, i| {
+    fn tokenize(self: *Parser, input: []const u8) void {
+        var mode: LexMode = LexMode.Whitespace;
+        var start: usize = 0;
+
+        for (input) |byte, i| {
+            switch (mode) {
+                .Whitespace => if (!(byte == '\r' or byte == '\n' or byte == ' ' or byte == '\t')) {
+                    if (i > start) {
+                        self.onToken(Token{ .whitespace = input[start..i] });
+                    }
+                    start = i;
+                    mode = tokenMode(byte);
+                },
+                .Comment => if (byte == '\r' or byte == '\n') {
+                    self.onToken(Token{ .comment = input[start..i] });
+                    start = i;
+                    mode = LexMode.Whitespace;
+                },
+                .String => if (byte == '\'') {
+                    self.onToken(Token{ .string = input[start .. i + 1] });
+                    start = i + 1;
+                    mode = LexMode.Whitespace;
+                },
+                .Zero => if (byte == 'x' or byte == 'X') {
+                    mode = LexMode.Hex;
+                } else if (byte == 'o' or byte == 'O') {
+                    mode = LexMode.Octal;
+                } else if (byte == 'b' or byte == 'B') {
+                    mode = LexMode.Binary;
+                } else if (byte >= '0' and byte <= '9') {
+                    mode = LexMode.Dec;
+                } else {
+                    self.onToken(Token{ .dec = input[start..i] });
+                    start = i;
+                    mode = tokenMode(byte);
+                },
+                .Dec => if (!(byte >= '0' and byte <= '9')) {
+                    self.onToken(Token{ .dec = input[start..i] });
+                    start = i;
+                    mode = tokenMode(byte);
+                },
+                .Hex => if (!(byte >= '0' and byte <= '9' or byte >= 'a' and byte <= 'f' or byte >= 'A' and byte <= 'F')) {
+                    self.onToken(Token{ .hex = input[start..i] });
+                    start = i;
+                    mode = tokenMode(byte);
+                },
+                .Octal => if (!(byte >= '0' and byte <= '7')) {
+                    self.onToken(Token{ .oct = input[start..i] });
+                    start = i;
+                    mode = tokenMode(byte);
+                },
+                .Binary => if (!(byte >= '0' and byte <= '1')) {
+                    self.onToken(Token{ .bin = input[start..i] });
+                    start = i;
+                    mode = tokenMode(byte);
+                },
+                .Ident => if (isWhitespace(byte) or isDec(byte) or byte == '\'' or byte == '#') {
+                    self.onToken(Token{ .ident = input[start..i] });
+                    start = i;
+                    mode = tokenMode(byte);
+                },
+                .Open => {
+                    self.onToken(Token{ .open = input[start..i] });
+                    start = i;
+                    mode = tokenMode(byte);
+                },
+                .Close => {
+                    self.onToken(Token{ .close = input[start..i] });
+                    start = i;
+                    mode = tokenMode(byte);
+                },
+            }
+        }
+        // When we reach EOS, flush whatever token is leftover.
         switch (mode) {
-            .Whitespace => if (!(byte == '\r' or byte == '\n' or byte == ' ' or byte == '\t')) {
-                if (i > start) {
-                    onToken(Token{ .whitespace = input[start..i] });
-                }
-                start = i;
-                mode = tokenMode(byte);
-            },
-            .Comment => if (byte == '\r' or byte == '\n') {
-                onToken(Token{ .comment = input[start..i] });
-                start = i;
-                mode = LexMode.Whitespace;
-            },
-            .String => if (byte == '\'') {
-                onToken(Token{ .string = input[start .. i + 1] });
-                start = i + 1;
-                mode = LexMode.Whitespace;
-            },
-            .Zero => if (byte == 'x' or byte == 'X') {
-                mode = LexMode.Hex;
-            } else if (byte == 'o' or byte == 'O') {
-                mode = LexMode.Octal;
-            } else if (byte == 'b' or byte == 'B') {
-                mode = LexMode.Binary;
-            } else if (byte >= '0' and byte <= '9') {
-                mode = LexMode.Dec;
-            } else {
-                onToken(Token{ .dec = input[start..i] });
-                start = i;
-                mode = tokenMode(byte);
-            },
-            .Dec => if (!(byte >= '0' and byte <= '9')) {
-                onToken(Token{ .dec = input[start..i] });
-                start = i;
-                mode = tokenMode(byte);
-            },
-            .Hex => if (!(byte >= '0' and byte <= '9' or byte >= 'a' and byte <= 'f' or byte >= 'A' and byte <= 'F')) {
-                onToken(Token{ .hex = input[start..i] });
-                start = i;
-                mode = tokenMode(byte);
-            },
-            .Octal => if (!(byte >= '0' and byte <= '7')) {
-                onToken(Token{ .oct = input[start..i] });
-                start = i;
-                mode = tokenMode(byte);
-            },
-            .Binary => if (!(byte >= '0' and byte <= '1')) {
-                onToken(Token{ .bin = input[start..i] });
-                start = i;
-                mode = tokenMode(byte);
-            },
-            .Ident => if (isWhitespace(byte) or isDec(byte) or byte == '\'' or byte == '#') {
-                onToken(Token{ .ident = input[start..i] });
-                start = i;
-                mode = tokenMode(byte);
-            },
-            .Open => {
-                onToken(Token{ .open = input[start..i] });
-                start = i;
-                mode = tokenMode(byte);
-            },
-            .Close => {
-                onToken(Token{ .close = input[start..i] });
-                start = i;
-                mode = tokenMode(byte);
-            },
+            .Whitespace => self.onToken(Token{ .whitespace = input[start..] }),
+            .Comment => self.onToken(Token{ .comment = input[start..] }),
+            .String => self.onToken(Token{ .string = input[start..] }),
+            .Zero => self.onToken(Token{ .dec = input[start..] }),
+            .Dec => self.onToken(Token{ .dec = input[start..] }),
+            .Hex => self.onToken(Token{ .hex = input[start..] }),
+            .Octal => self.onToken(Token{ .oct = input[start..] }),
+            .Binary => self.onToken(Token{ .bin = input[start..] }),
+            .Ident => self.onToken(Token{ .ident = input[start..] }),
+            .Open => self.onToken(Token{ .open = input[start..] }),
+            .Close => self.onToken(Token{ .close = input[start..] }),
         }
     }
-    // When we reach EOS, flush whatever token is leftover.
-    switch (mode) {
-        .Whitespace => onToken(Token{ .whitespace = input[start..] }),
-        .Comment => onToken(Token{ .comment = input[start..] }),
-        .String => onToken(Token{ .string = input[start..] }),
-        .Zero => onToken(Token{ .dec = input[start..] }),
-        .Dec => onToken(Token{ .dec = input[start..] }),
-        .Hex => onToken(Token{ .hex = input[start..] }),
-        .Octal => onToken(Token{ .oct = input[start..] }),
-        .Binary => onToken(Token{ .bin = input[start..] }),
-        .Ident => onToken(Token{ .ident = input[start..] }),
-        .Open => onToken(Token{ .open = input[start..] }),
-        .Close => onToken(Token{ .close = input[start..] }),
-    }
-}
 
-pub fn main() !void {
-    const stdout = &std.io.getStdOut().outStream().stream;
+    fn onToken(self: *Parser, token: Token) void {
+        const stdout = &std.io.getStdOut().outStream().stream;
+        stdout.print("{}\n", .{token}) catch unreachable;
+    }
 
     // recursive(limit=5 fields(
     //     'tree'(recursive(all(recurse)))
@@ -300,19 +174,15 @@ pub fn main() !void {
     //     FieldEntry.init("parents", &Selector.all(&Selector.recurse())),
     // }));
     // try stdout.print("shallowClone = {}\n", .{shallowClone});
+};
 
-    const file = try std.fs.cwd().openFile("selectors/samples.ipldsel", .{ .read = true, .write = false });
-    defer file.close();
-    const meta = try file.stat();
-    var buffer = try std.testing.allocator.alloc(u8, meta.size);
-    defer std.testing.allocator.free(buffer);
-    const len = try file.read(buffer);
-    tokenize(buffer, dumpToken);
-
-    // tokenize("  # Comment\n  'string' 'another''string' 123 0x1fd 0o664889 0b1001010 0 001 R5f'tree'R*~'parents'*~", dumpToken);
-}
-
-fn dumpToken(token: Token) void {
+pub fn main() !void {
     const stdout = &std.io.getStdOut().outStream().stream;
-    stdout.print("{}\n", .{token}) catch unreachable;
+
+    const parser = Parser{};
+    try parser.parseFile("selectors/samples.ipldsel");
+
+    // var hash = [_]u8{0} ** 32;
+    // std.crypto.gimli.hash(hash[0..], buffer);
+    // try stdout.print("hash {x}\n", .{hash[0..]});
 }
