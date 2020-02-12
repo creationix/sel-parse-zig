@@ -301,8 +301,13 @@ pub fn main() !void {
     // }));
     // try stdout.print("shallowClone = {}\n", .{shallowClone});
 
-    const res = std.fs.cwd().openRead("selectors/samples.ipldsel");
-    try stdout.print("res = {}\n", .{res});
+    const file = try std.fs.cwd().openFile("selectors/samples.ipldsel", .{ .read = true, .write = false });
+    defer file.close();
+    const meta = try file.stat();
+    var buffer = try std.testing.allocator.alloc(u8, meta.size);
+    defer std.testing.allocator.free(buffer);
+    const len = try file.read(buffer);
+    tokenize(buffer, dumpToken);
 
     // tokenize("  # Comment\n  'string' 'another''string' 123 0x1fd 0o664889 0b1001010 0 001 R5f'tree'R*~'parents'*~", dumpToken);
 }
