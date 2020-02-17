@@ -21,12 +21,11 @@ pub const Token = struct {
 pub fn readNext(input: []const u8) Token {
     if (input.len > 0) {
         if (readToken(input)) |token| return token;
-        var i: u32 = 1;
-        while (input.len - i >= 1) {
+        var i: usize = 1;
+        while (input.len - i >= 1) : (i += 1) {
             if (readToken(input[i..])) |_| {
                 return Token{ .id = .Unknown, .slice = input[0..i] };
             }
-            i += 1;
         }
     }
     return Token{ .id = .Unknown, .slice = input };
@@ -63,46 +62,45 @@ fn readToken(input: []const u8) ?Token {
     { // Tokenize Integers
         if (input[0] == '0' and input.len >= 3) {
             if ((input[1] == 'b' or input[1] == 'B') and isBin(input[2])) {
-                var i: u32 = 2;
+                var i: usize = 2;
                 while (i < input.len and isBin(input[i])) i += 1;
                 return Token{ .id = .Binary, .slice = input[0..i] };
             }
             if ((input[1] == 'o' or input[1] == 'O') and isOct(input[2])) {
-                var i: u32 = 2;
+                var i: usize = 2;
                 while (i < input.len and isOct(input[i])) i += 1;
                 return Token{ .id = .Octal, .slice = input[0..i] };
             }
             if ((input[1] == 'x' or input[1] == 'X') and isHex(input[2])) {
-                var i: u32 = 2;
+                var i: usize = 2;
                 while (i < input.len and isHex(input[i])) i += 1;
                 return Token{ .id = .Hexadecimal, .slice = input[0..i] };
             }
         }
         if (isDec(input[0])) {
-            var i: u32 = 1;
+            var i: usize = 1;
             while (i < input.len and isDec(input[i])) i += 1;
             return Token{ .id = .Decimal, .slice = input[0..i] };
         }
     }
     { // Tokenize Comments
         if (input.len >= 2 and input[0] == '/' and input[1] == '/') {
-            var i: u32 = 2;
+            var i: usize = 2;
             while (i < input.len and input[i] != '\r' and input[i] != '\n') i += 1;
             return Token{ .id = .Comment, .slice = input[0..i] };
         }
     }
     { // Tokenize Strings
         if (input[0] == '\'') {
-            var i: u32 = 1;
-            while (i < input.len) {
+            var i: usize = 1;
+            while (i < input.len) : (i += 1) {
                 if (input[i] == '\'') return Token{ .id = .String, .slice = input[0 .. i + 1] };
-                i += 1;
             }
         }
     }
     { // Tokenize Whitespace
         if (isWhitespace(input[0])) {
-            var i: u32 = 1;
+            var i: usize = 1;
             while (i < input.len and isWhitespace(input[i])) i += 1;
             return Token{ .id = .Whitespace, .slice = input[0..i] };
         }
@@ -110,13 +108,12 @@ fn readToken(input: []const u8) ?Token {
     { // Tokenize Identifiers
         inline for (identifiers) |ident| {
             var matched = true;
-            var i: u32 = 0;
-            while (i < ident.len) {
+            var i: usize = 0;
+            while (i < ident.len) : (i += 1) {
                 if (i >= input.len or ident[i] != input[i]) {
                     matched = false;
                     break;
                 }
-                i += 1;
             }
             if (matched) return Token{ .id = .Identifier, .slice = input[0..i] };
         }
